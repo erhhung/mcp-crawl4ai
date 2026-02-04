@@ -1,4 +1,5 @@
 #!/bin/bash
+
 # Docker Registry Push Script for Crawl4AI MCP Server
 
 set -e
@@ -11,7 +12,7 @@ BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
 # Configuration
-DOCKER_REPO="uysalsadi/crawl4ai-mcp-server"
+DOCKER_REPO="erhhung/mcp-crawl4ai"
 VERSION="v1.0.0"
 
 # Helper function for logging
@@ -49,7 +50,7 @@ Commands:
 Examples:
     $0 login        # Login to Docker Hub first
     $0 all          # Build, push, and test everything
-    
+
 Before running:
     1. Make sure you have a Docker Hub account
     2. Run: $0 login
@@ -69,13 +70,13 @@ docker_login() {
 # Build and tag image
 build_image() {
     log "Building Docker image..."
-    
+
     # Build using the simplified Dockerfile
     docker build -f Dockerfile.simple \
         -t ${DOCKER_REPO}:latest \
         -t ${DOCKER_REPO}:${VERSION} \
         .
-    
+
     success "Docker image built and tagged successfully!"
     log "Tags created:"
     log "  - ${DOCKER_REPO}:latest"
@@ -85,11 +86,11 @@ build_image() {
 # Push to registry
 push_image() {
     log "Pushing image to Docker Hub..."
-    
+
     # Push both tags
     docker push ${DOCKER_REPO}:latest
     docker push ${DOCKER_REPO}:${VERSION}
-    
+
     success "Docker image pushed successfully!"
     log "Available at:"
     log "  - docker pull ${DOCKER_REPO}:latest"
@@ -99,16 +100,16 @@ push_image() {
 # Test the pushed image
 test_image() {
     log "Testing the pushed image..."
-    
+
     # Pull and test the latest image
     docker pull ${DOCKER_REPO}:latest
-    
+
     # Test basic functionality
     log "Testing MCP server initialization..."
     init_request='{"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2024-11-05", "capabilities": {}, "clientInfo": {"name": "test", "version": "1.0"}}}'
-    
+
     response=$(echo "$init_request" | docker run --rm -i ${DOCKER_REPO}:latest | head -1)
-    
+
     if echo "$response" | grep -q '"name":"crawl4ai-mcp"'; then
         success "✅ Pushed image works correctly!"
         log "Response: $response"
@@ -126,7 +127,7 @@ do_all() {
     push_image
     test_image
     success "🎉 All operations completed successfully!"
-    
+
     cat << EOF
 
 🐳 Your Docker image is now available publicly!
@@ -148,7 +149,7 @@ main() {
         show_usage
         exit 1
     fi
-    
+
     case "$1" in
         "login")
             docker_login

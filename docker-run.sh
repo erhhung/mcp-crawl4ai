@@ -1,4 +1,5 @@
 #!/bin/bash
+
 # Crawl4AI MCP Server Docker Runner
 # Provides easy commands for running the Docker container
 
@@ -13,7 +14,7 @@ NC='\033[0m' # No Color
 
 # Helper function for logging
 log() {
-    echo -e "${BLUE}[crawl4ai-mcp]${NC} $1"
+    echo -e "${BLUE}[mcp-crawl4ai]${NC} $1"
 }
 
 error() {
@@ -50,12 +51,11 @@ Examples:
     $0 run                      # Run MCP server
     $0 test                     # Run smoke tests
     $0 dev                      # Development mode
-    
+
 Environment Variables:
     OPENAI_API_KEY             OpenAI API key for agents example
     TARGET_URL                 URL for testing (default: https://modelcontextprotocol.io/docs)
-    CRAWL4AI_MCP_LOG          Log level (DEBUG, INFO, WARN, ERROR)
-
+    CRAWL4AI_MCP_LOG           Log level (DEBUG, INFO, WARN, ERROR)
 EOF
 }
 
@@ -113,7 +113,7 @@ check_docker() {
         error "Docker is not installed. Please install Docker first."
         exit 1
     fi
-    
+
     if ! docker compose version &> /dev/null; then
         error "docker compose is not available. Please install Docker Compose plugin."
         exit 1
@@ -123,12 +123,12 @@ check_docker() {
 # Main execution
 main() {
     check_docker
-    
+
     if [ $# -eq 0 ]; then
         show_usage
         exit 1
     fi
-    
+
     case "$1" in
         "build")
             build_image

@@ -1,10 +1,10 @@
 services:
   crawl4ai-mcp:
     build: .
-    image: crawl4ai-mcp-server:latest
-    container_name: crawl4ai-mcp
-    stdin_open: true       # Keep STDIN open for MCP stdio communication
-    tty: true             # Allocate a pseudo-TTY for proper stdio handling
+    image: mcp-crawl4ai:latest
+    container_name: mcp-crawl4ai
+    stdin_open: true # Keep STDIN open for MCP stdio communication
+    tty: true # Allocate a pseudo-TTY for proper stdio handling
     volumes:
       # Mount output directories for persistent storage
       - ./crawls:/app/crawls
@@ -23,7 +23,7 @@ services:
       resources:
         limits:
           memory: 2G
-          cpus: '1.0'
+          cpus: "1.0"
         reservations:
           memory: 512M
     # Restart policy
@@ -32,8 +32,8 @@ services:
   # Development service with shell access
   crawl4ai-mcp-dev:
     build: .
-    image: crawl4ai-mcp-server:latest
-    container_name: crawl4ai-mcp-dev
+    image: mcp-crawl4ai:latest
+    container_name: mcp-crawl4ai
     command: /bin/bash
     stdin_open: true
     tty: true
@@ -50,8 +50,8 @@ services:
   # Test service for running smoke tests
   crawl4ai-mcp-test:
     build: .
-    image: crawl4ai-mcp-server:latest
-    container_name: crawl4ai-mcp-test
+    image: mcp-crawl4ai:latest
+    container_name: mcp-crawl4ai
     command: python -m crawler_agent.smoke_client
     volumes:
       - ./test_crawls:/app/test_crawls
