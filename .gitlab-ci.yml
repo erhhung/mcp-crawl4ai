@@ -1,0 +1,44 @@
+# Bash helper functions automatically sourced when runner build pod starts:
+# https://github.com/erhhung/homelab-k8s/tree/main/files/gitlab/ciutils.sh
+
+.setup:
+  script:
+    - '# ========== .setup =========='
+    - buildah_login
+
+.build:
+  script:
+    - !reference [.setup, script]
+    - '# ========== .build =========='
+    - buildah_build $IMAGE_NAME --no-cache -f ./Dockerfile .
+    - buildah_push $IMAGE_NAME $CI_COMMIT_SHORT_SHA
+
+.deploy:
+  script:
+    - '# ========== .deploy =========='
+    - image="$CI_REGISTRY_PATH/$IMAGE_NAME:$CI_COMMIT_SHORT_SHA"
+    - set_k8s_image Deployment $NAMESPACE mcpo container crawl4ai $image
+    - kubectl rollout restart Deployment -n $NAMESPACE mcpo
+
+variables:
+  IMAGE_NAME: mcp-crawl4ai
+  NAMESPACE: open-webui
+  # CI_DEBUG: 600
+
+stages:
+  - build
+  - deploy
+
+# ==================== BUILD STAGE ====================
+
+build:
+  stage: build
+  extends: .build
+  needs: []
+
+# ==================== DEPLOY STAGE ====================
+
+deploy:
+  stage: deploy
+  extends: .deploy
+  needs: ["build"]
