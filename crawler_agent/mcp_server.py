@@ -7,11 +7,11 @@ import time
 import os
 import sys
 import logging
+
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
-
 from pydantic import BaseModel, Field, HttpUrl
 
 from mcp import types
@@ -22,6 +22,7 @@ import mcp.server.stdio
 from urllib.parse import urlparse, urljoin
 
 from crawl4ai import AsyncWebCrawler
+from crawl4ai.async_logger import AsyncLoggerBase
 
 from .safety import require_public_http_url
 from .adaptive_strategy import should_continue_crawling
@@ -41,25 +42,78 @@ from .sitemap_utils import discover_sitemaps, parse_sitemap_xml, filter_urls, fe
 
 # Configure stderr logging (stdout is reserved for MCP stdio messages)
 _LOG_LEVEL = os.getenv("CRAWL4AI_MCP_LOG", "INFO").upper()
-logger = logging.getLogger("crawl4ai_mcp")
+logger = logging.getLogger("mcp-crawl4ai")
 if not logger.handlers:
     _h = logging.StreamHandler(sys.stderr)
-    _h.setFormatter(logging.Formatter("%(asctime)s %(levelname)s [%(name)s] %(message)s"))
+    _h.setFormatter(
+        logging.Formatter("%(asctime)s %(levelname)s [%(name)s] %(message)s")
+    )
     logger.addHandler(_h)
 logger.setLevel(_LOG_LEVEL)
 logger.propagate = False
 
 
-server = Server("crawl4ai-mcp")
+class StderrLogger(AsyncLoggerBase):
+    """
+    Custom logger for Crawl4AI's AsyncWebCrawler that directs all output
+    to stderr to avoid interfering with MCP JSON-RPC on stdout.
+    """
+
+    def __init__(self):
+        self.verbose = True
+
+    def debug(self, message: str, tag: str = "DEBUG", **kwargs):
+        print(f"[{tag}] {message}", file=sys.stderr)
+
+    def info(self, message: str, tag: str = "INFO", **kwargs):
+        print(f"[{tag}] {message}", file=sys.stderr)
+
+    def success(self, message: str, tag: str = "SUCCESS", **kwargs):
+        print(f"[{tag}] {message}", file=sys.stderr)
+
+    def warning(self, message: str, tag: str = "WARNING", **kwargs):
+        print(f"[{tag}] WARNING: {message}", file=sys.stderr)
+
+    def error(self, message: str, tag: str = "ERROR", **kwargs):
+        print(f"[{tag}] ERROR: {message}", file=sys.stderr)
+
+    def url_status(
+        self,
+        url: str,
+        success: bool,
+        timing: float,
+        tag: str = "FETCH",
+        url_length: int = 100,
+    ):
+        status = "✓" if success else "✗"
+        print(
+            f"[{tag}] {url[:url_length]}... | {status} | ⏱: {timing:.2f}s",
+            file=sys.stderr,
+        )
+
+    def error_status(
+        self, url: str, error: str, tag: str = "ERROR", url_length: int = 100
+    ):
+        print(f"[{tag}] ERROR: {url[:url_length]}... - {error}", file=sys.stderr)
+
+
+server = Server("mcp-crawl4ai")
 
 
 class ScrapeArgs(BaseModel):
     url: HttpUrl
-    crawler: Dict[str, Any] = Field(default_factory=dict, description="Crawl4AI crawler config overrides")
-    browser: Dict[str, Any] = Field(default_factory=dict, description="Crawl4AI browser config overrides")
+    crawler: Optional[Dict[str, Any]] = Field(
+        default_factory=dict, description="Crawl4AI crawler config overrides"
+    )
+    browser: Optional[Dict[str, Any]] = Field(
+        default_factory=dict, description="Crawl4AI browser config overrides"
+    )
     script: Optional[str] = Field(default=None, description="Optional C4A-Script")
     timeout_sec: Optional[int] = Field(default=45, ge=1, le=600)
-    output_dir: Optional[str] = Field(default=None, description="If provided, persist to disk and return metadata only")
+    output_dir: Optional[str] = Field(
+        default=None,
+        description="If provided, persist to disk and return metadata only",
+    )
 
 
 class ScrapeResult(BaseModel):
@@ -76,12 +130,18 @@ class CrawlArgs(BaseModel):
     same_domain_only: bool = True
     include_patterns: List[str] = Field(default_factory=list)
     exclude_patterns: List[str] = Field(default_factory=list)
-    adaptive: bool = Field(default=False, description="Enable adaptive crawling to stop when sufficient info is gathered")
-    crawler: Dict[str, Any] = Field(default_factory=dict)
-    browser: Dict[str, Any] = Field(default_factory=dict)
+    adaptive: bool = Field(
+        default=False,
+        description="Enable adaptive crawling to stop when sufficient info is gathered",
+    )
+    crawler: Optional[Dict[str, Any]] = Field(default_factory=dict)
+    browser: Optional[Dict[str, Any]] = Field(default_factory=dict)
     script: Optional[str] = None
     timeout_sec: Optional[int] = Field(default=60, ge=1, le=900)
-    output_dir: Optional[str] = Field(default=None, description="If provided, persist to disk and return metadata only")
+    output_dir: Optional[str] = Field(
+        default=None,
+        description="If provided, persist to disk and return metadata only",
+    )
 
 
 class CrawlPage(BaseModel):
@@ -104,7 +164,9 @@ class CrawlSiteArgs(BaseModel):
     same_domain_only: bool = True
     include_patterns: List[str] = Field(default_factory=list)
     exclude_patterns: List[str] = Field(default_factory=list)
-    formats: List[str] = Field(default_factory=lambda: ["md", "jsonl"])  # md,jsonl,links_csv
+    formats: List[str] = Field(
+        default_factory=lambda: ["md", "jsonl"]
+    )  # md,jsonl,links_csv
     adaptive: bool = False
     respect_robots: str = Field(default="enforce")  # enforce|warn|ignore (placeholder)
     politeness_delay_ms: int = 500
@@ -118,7 +180,9 @@ class CrawlSitemapArgs(BaseModel):
     max_entries: int = 1000
     include_patterns: List[str] = Field(default_factory=list)
     exclude_patterns: List[str] = Field(default_factory=list)
-    formats: List[str] = Field(default_factory=lambda: ["md", "jsonl"])  # md,jsonl,links_csv
+    formats: List[str] = Field(
+        default_factory=lambda: ["md", "jsonl"]
+    )  # md,jsonl,links_csv
     politeness_delay_ms: int = 500
     max_concurrency: int = 2
     timeout_sec: int = 900
@@ -186,10 +250,11 @@ async def list_tools() -> List[types.Tool]:
 
 async def _run_scrape(args: ScrapeArgs) -> ScrapeResult:
     require_public_http_url(str(args.url))
-    async with AsyncWebCrawler() as crawler:
+    crawler_config = args.crawler or {}
+    browser_config = args.browser or {}
+    async with AsyncWebCrawler(logger=StderrLogger(), **crawler_config) as crawler:
         result = await crawler.arun(
-            url=str(args.url),
-            script=args.script,
+            url=str(args.url), script=args.script, **browser_config
         )
     links = []
     raw_links = getattr(result, "links", []) or []
@@ -200,17 +265,19 @@ async def _run_scrape(args: ScrapeArgs) -> ScrapeResult:
             href = link.get("href") or link.get("url")
             if isinstance(href, str):
                 links.append(href)
-    return ScrapeResult(url=str(args.url), markdown=result.markdown or "", links=links, metadata={})
+    return ScrapeResult(
+        url=str(args.url), markdown=result.markdown or "", links=links, metadata={}
+    )
 
 
 async def _persist_scrape(args: ScrapeArgs) -> ScrapePersistResult:
     require_public_http_url(str(args.url))
     run_id = generate_run_id("scrape")
     logger.info("persist_scrape start run_id=%s url=%s", run_id, str(args.url))
-    
+
     run_dir = ensure_run_dir(args.output_dir, run_id)
     started_at = datetime.now(timezone.utc)
-    
+
     # Create manifest
     manifest = Manifest(
         run_id=run_id,
@@ -220,14 +287,15 @@ async def _persist_scrape(args: ScrapeArgs) -> ScrapePersistResult:
         config=args.model_dump(),
     )
     write_manifest(run_dir, manifest)
-    
+
     # Scrape the content
-    async with AsyncWebCrawler() as crawler:
+    crawler_config = args.crawler or {}
+    browser_config = args.browser or {}
+    async with AsyncWebCrawler(logger=StderrLogger(), **crawler_config) as crawler:
         result = await crawler.arun(
-            url=str(args.url),
-            script=args.script,
+            url=str(args.url), script=args.script, **browser_config
         )
-    
+
     # Process links
     links = []
     raw_links = getattr(result, "links", []) or []
@@ -238,7 +306,7 @@ async def _persist_scrape(args: ScrapeArgs) -> ScrapePersistResult:
             href = link.get("href") or link.get("url")
             if isinstance(href, str):
                 links.append(href)
-    
+
     # Persist to disk
     markdown = result.markdown or ""
     file_path, content_bytes = persist_page_markdown(run_dir, str(args.url), markdown)
@@ -248,21 +316,30 @@ async def _persist_scrape(args: ScrapeArgs) -> ScrapePersistResult:
         error=None,
         duration_ms=0,  # We don't track this for single scrape
         path=file_path,
-        content_bytes=content_bytes
+        content_bytes=content_bytes,
     )
-    
+
     # Update manifest
     manifest.pages = [page_record]
     manifest.finished_at = datetime.now(timezone.utc).isoformat()
-    manifest.totals = {"pages_ok": 1, "pages_failed": 0, "bytes_written": page_record.content_bytes}
+    manifest.totals = {
+        "pages_ok": 1,
+        "pages_failed": 0,
+        "bytes_written": page_record.content_bytes,
+    }
     write_manifest(run_dir, manifest)
-    
+
     # Log and save links if any
     if links:
         append_links_csv(run_dir, str(args.url), links)
-    
-    logger.info("persist_scrape done run_id=%s file=%s bytes=%d", run_id, Path(file_path).name, page_record.content_bytes)
-    
+
+    logger.info(
+        "persist_scrape done run_id=%s file=%s bytes=%d",
+        run_id,
+        Path(file_path).name,
+        page_record.content_bytes,
+    )
+
     return ScrapePersistResult(
         run_id=run_id,
         output_dir=str(run_dir),
@@ -270,7 +347,7 @@ async def _persist_scrape(args: ScrapeArgs) -> ScrapePersistResult:
         file_path=str(file_path),
         bytes_written=page_record.content_bytes,
         started_at=started_at.isoformat(),
-        finished_at=manifest.finished_at
+        finished_at=manifest.finished_at,
     )
 
 
@@ -284,7 +361,13 @@ def _compile_patterns(patterns: List[str]) -> List[re.Pattern[str]]:
     return compiled
 
 
-def _url_allowed(url: str, seed_host: str, same_domain_only: bool, include: List[re.Pattern[str]], exclude: List[re.Pattern[str]]) -> bool:
+def _url_allowed(
+    url: str,
+    seed_host: str,
+    same_domain_only: bool,
+    include: List[re.Pattern[str]],
+    exclude: List[re.Pattern[str]],
+) -> bool:
     try:
         require_public_http_url(url)
     except ValueError:
@@ -330,6 +413,8 @@ def _extract_links_from_result(base_url: str, result: Any) -> List[str]:
 
 async def _run_crawl(args: CrawlArgs) -> CrawlResult:
     require_public_http_url(str(args.seed_url))
+    crawler_config = args.crawler or {}
+    browser_config = args.browser or {}
     seed_host = urlparse(str(args.seed_url)).hostname or ""
     include = _compile_patterns(args.include_patterns)
     exclude = _compile_patterns(args.exclude_patterns)
@@ -338,17 +423,19 @@ async def _run_crawl(args: CrawlArgs) -> CrawlResult:
     frontier: List[tuple[str, int]] = [(str(args.seed_url), 0)]
     pages: List[CrawlPage] = []
 
-    async with AsyncWebCrawler() as crawler:
+    async with AsyncWebCrawler(logger=StderrLogger(), **crawler_config) as crawler:
         while frontier and len(pages) < args.max_pages:
             url, depth = frontier.pop(0)
             if url in visited:
                 continue
             visited.add(url)
 
-            result = await crawler.arun(url=url, script=args.script)
+            result = await crawler.arun(url=url, script=args.script, **browser_config)
             page_links: List[str] = _extract_links_from_result(url, result)
 
-            pages.append(CrawlPage(url=url, markdown=result.markdown or "", links=page_links))
+            pages.append(
+                CrawlPage(url=url, markdown=result.markdown or "", links=page_links)
+            )
 
             if args.adaptive:
                 page_contents = [page.markdown for page in pages]
@@ -359,21 +446,31 @@ async def _run_crawl(args: CrawlArgs) -> CrawlResult:
                 for href in page_links:
                     if len(pages) >= args.max_pages:
                         break
-                    if _url_allowed(href, seed_host, args.same_domain_only, include, exclude):
+                    if _url_allowed(
+                        href, seed_host, args.same_domain_only, include, exclude
+                    ):
                         if href not in visited and all(href != u for u, _ in frontier):
                             frontier.append((href, depth + 1))
 
-    return CrawlResult(start_url=str(args.seed_url), pages=pages, total_pages=len(pages))
+    return CrawlResult(
+        start_url=str(args.seed_url), pages=pages, total_pages=len(pages)
+    )
 
 
 async def _persist_crawl(args: CrawlArgs) -> CrawlPersistResult:
     require_public_http_url(str(args.seed_url))
     run_id = generate_run_id("crawl")
-    logger.info("persist_crawl start run_id=%s seed=%s depth=%d pages=%d", run_id, str(args.seed_url), args.max_depth, args.max_pages)
-    
+    logger.info(
+        "persist_crawl start run_id=%s seed=%s depth=%d pages=%d",
+        run_id,
+        str(args.seed_url),
+        args.max_depth,
+        args.max_pages,
+    )
+
     run_dir = ensure_run_dir(args.output_dir, run_id)
     started_at = datetime.now(timezone.utc)
-    
+
     # Create manifest
     manifest = Manifest(
         run_id=run_id,
@@ -383,30 +480,34 @@ async def _persist_crawl(args: CrawlArgs) -> CrawlPersistResult:
         config=args.model_dump(),
     )
     write_manifest(run_dir, manifest)
-    
+
     # Crawl logic (same as _run_crawl but with persistence)
+    crawler_config = args.crawler or {}
+    browser_config = args.browser or {}
     seed_host = urlparse(str(args.seed_url)).hostname or ""
     include = _compile_patterns(args.include_patterns)
     exclude = _compile_patterns(args.exclude_patterns)
-    
+
     visited: Set[str] = set()
     frontier: List[tuple[str, int]] = [(str(args.seed_url), 0)]
     pages_ok = 0
     pages_failed = 0
     total_bytes = 0
-    
-    async with AsyncWebCrawler() as crawler:
+
+    async with AsyncWebCrawler(logger=StderrLogger(), **crawler_config) as crawler:
         while frontier and len(visited) < args.max_pages:
             url, depth = frontier.pop(0)
             if url in visited or depth > args.max_depth:
                 continue
             visited.add(url)
-            
+
             try:
                 logger.debug("crawling url=%s depth=%d", url, depth)
-                result = await crawler.arun(url=url, script=args.script)
+                result = await crawler.arun(
+                    url=url, script=args.script, **browser_config
+                )
                 markdown = result.markdown or ""
-                
+
                 # Persist page
                 file_path, content_bytes = persist_page_markdown(run_dir, url, markdown)
                 page_record = PageRecord(
@@ -415,30 +516,41 @@ async def _persist_crawl(args: CrawlArgs) -> CrawlPersistResult:
                     error=None,
                     duration_ms=0,  # We don't track timing in this simplified version
                     path=file_path,
-                    content_bytes=content_bytes
+                    content_bytes=content_bytes,
                 )
                 total_bytes += page_record.content_bytes
-                
+
                 # Save to manifest
                 append_jsonl(run_dir, page_record.model_dump())
                 pages_ok += 1
-                
+
                 # Extract and save links
                 links = _extract_links_from_result(url, result)
                 if links:
                     append_links_csv(run_dir, url, links)
-                
-                logger.info("crawled url=%s depth=%d bytes=%d", url, depth, page_record.content_bytes)
-                
+
+                logger.info(
+                    "crawled url=%s depth=%d bytes=%d",
+                    url,
+                    depth,
+                    page_record.content_bytes,
+                )
+
                 # Add new URLs to frontier if not at max depth
                 if depth < args.max_depth:
                     for href in links:
-                        if args.adaptive and should_continue_crawling(len(visited), args.max_pages):
+                        if args.adaptive and should_continue_crawling(
+                            len(visited), args.max_pages
+                        ):
                             break
-                        if _url_allowed(href, seed_host, args.same_domain_only, include, exclude):
-                            if href not in visited and all(href != u for u, _ in frontier):
+                        if _url_allowed(
+                            href, seed_host, args.same_domain_only, include, exclude
+                        ):
+                            if href not in visited and all(
+                                href != u for u, _ in frontier
+                            ):
                                 frontier.append((href, depth + 1))
-                                
+
             except Exception as e:
                 logger.warning("failed to crawl url=%s: %s", url, str(e))
                 page_record = PageRecord(
@@ -447,18 +559,28 @@ async def _persist_crawl(args: CrawlArgs) -> CrawlPersistResult:
                     error=str(e),
                     duration_ms=0,
                     path=None,
-                    content_bytes=None
+                    content_bytes=None,
                 )
                 append_jsonl(run_dir, page_record.model_dump())
                 pages_failed += 1
-    
+
     # Update manifest with final results
     manifest.finished_at = datetime.now(timezone.utc).isoformat()
-    manifest.totals = {"pages_ok": pages_ok, "pages_failed": pages_failed, "bytes_written": total_bytes}
+    manifest.totals = {
+        "pages_ok": pages_ok,
+        "pages_failed": pages_failed,
+        "bytes_written": total_bytes,
+    }
     write_manifest(run_dir, manifest)
-    
-    logger.info("persist_crawl done run_id=%s pages_ok=%d pages_failed=%d bytes=%d", run_id, pages_ok, pages_failed, total_bytes)
-    
+
+    logger.info(
+        "persist_crawl done run_id=%s pages_ok=%d pages_failed=%d bytes=%d",
+        run_id,
+        pages_ok,
+        pages_failed,
+        total_bytes,
+    )
+
     return CrawlPersistResult(
         run_id=run_id,
         output_dir=str(run_dir),
@@ -467,14 +589,20 @@ async def _persist_crawl(args: CrawlArgs) -> CrawlPersistResult:
         pages_failed=pages_failed,
         bytes_written=total_bytes,
         started_at=started_at.isoformat(),
-        finished_at=manifest.finished_at
+        finished_at=manifest.finished_at,
     )
 
 
 async def _persist_crawl_site(args: CrawlSiteArgs) -> CrawlPersistResult:
     require_public_http_url(str(args.entry_url))
     run_id = generate_run_id("site")
-    logger.info("crawl_site start run_id=%s entry=%s depth=%d pages=%d", run_id, str(args.entry_url), args.max_depth, args.max_pages)
+    logger.info(
+        "crawl_site start run_id=%s entry=%s depth=%d pages=%d",
+        run_id,
+        str(args.entry_url),
+        args.max_depth,
+        args.max_pages,
+    )
     run_dir = ensure_run_dir(args.output_dir, run_id)
 
     manifest = Manifest(
@@ -493,7 +621,7 @@ async def _persist_crawl_site(args: CrawlSiteArgs) -> CrawlPersistResult:
     visited: Set[str] = set()
     frontier: List[tuple[str, int]] = [(str(args.entry_url), 0)]
 
-    async with AsyncWebCrawler() as crawler:
+    async with AsyncWebCrawler(logger=StderrLogger()) as crawler:
         while frontier and manifest.totals.get("pages_ok", 0) < args.max_pages:
             url, depth = frontier.pop(0)
             if url in visited:
@@ -502,12 +630,24 @@ async def _persist_crawl_site(args: CrawlSiteArgs) -> CrawlPersistResult:
 
             t0 = time.perf_counter()
             try:
-                append_log_jsonl(run_dir, {"event": "fetch_start", "url": url, "depth": depth, "ts": time.time()})
+                append_log_jsonl(
+                    run_dir,
+                    {
+                        "event": "fetch_start",
+                        "url": url,
+                        "depth": depth,
+                        "ts": time.time(),
+                    },
+                )
                 result = await crawler.arun(url=url)
                 links: List[str] = _extract_links_from_result(url, result)
 
-                path, nbytes = persist_page_markdown(run_dir, url, result.markdown or "")
-                append_jsonl(run_dir, {"url": url, "markdown_path": path, "bytes": nbytes})
+                path, nbytes = persist_page_markdown(
+                    run_dir, url, result.markdown or ""
+                )
+                append_jsonl(
+                    run_dir, {"url": url, "markdown_path": path, "bytes": nbytes}
+                )
                 if "links_csv" in args.formats and links:
                     append_links_csv(run_dir, url, links)
 
@@ -520,14 +660,27 @@ async def _persist_crawl_site(args: CrawlSiteArgs) -> CrawlPersistResult:
                 )
                 manifest.pages.append(rec)
                 update_totals(manifest, rec)
-                append_log_jsonl(run_dir, {"event": "fetch_ok", "url": url, "bytes": nbytes, "links": len(links), "ts": time.time()})
+                append_log_jsonl(
+                    run_dir,
+                    {
+                        "event": "fetch_ok",
+                        "url": url,
+                        "bytes": nbytes,
+                        "links": len(links),
+                        "ts": time.time(),
+                    },
+                )
 
                 if depth + 1 <= args.max_depth:
                     for href in links:
                         if manifest.totals.get("pages_ok", 0) >= args.max_pages:
                             break
-                        if _url_allowed(href, seed_host, args.same_domain_only, include, exclude):
-                            if href not in visited and all(href != u for u, _ in frontier):
+                        if _url_allowed(
+                            href, seed_host, args.same_domain_only, include, exclude
+                        ):
+                            if href not in visited and all(
+                                href != u for u, _ in frontier
+                            ):
                                 frontier.append((href, depth + 1))
 
             except Exception as e:
@@ -541,7 +694,15 @@ async def _persist_crawl_site(args: CrawlSiteArgs) -> CrawlPersistResult:
                 )
                 manifest.pages.append(rec)
                 update_totals(manifest, rec)
-                append_log_jsonl(run_dir, {"event": "fetch_error", "url": url, "error": str(e), "ts": time.time()})
+                append_log_jsonl(
+                    run_dir,
+                    {
+                        "event": "fetch_error",
+                        "url": url,
+                        "error": str(e),
+                        "ts": time.time(),
+                    },
+                )
 
             write_manifest(run_dir, manifest)
             await asyncio.sleep(args.politeness_delay_ms / 1000.0)
@@ -572,7 +733,12 @@ async def _persist_crawl_site(args: CrawlSiteArgs) -> CrawlPersistResult:
 
 async def _persist_crawl_sitemap(args: CrawlSitemapArgs) -> CrawlPersistResult:
     run_id = generate_run_id("sitemap")
-    logger.info("crawl_sitemap start run_id=%s sitemap=%s max_entries=%d", run_id, str(args.sitemap_url), args.max_entries)
+    logger.info(
+        "crawl_sitemap start run_id=%s sitemap=%s max_entries=%d",
+        run_id,
+        str(args.sitemap_url),
+        args.max_entries,
+    )
     run_dir = ensure_run_dir(args.output_dir, run_id)
 
     manifest = Manifest(
@@ -592,18 +758,24 @@ async def _persist_crawl_sitemap(args: CrawlSitemapArgs) -> CrawlPersistResult:
     seeds = seeds[: args.max_entries]
     seeds = filter_urls(seeds, args.include_patterns, args.exclude_patterns)
 
-    async with AsyncWebCrawler() as crawler:
+    async with AsyncWebCrawler(logger=StderrLogger()) as crawler:
         for url in seeds:
             if manifest.totals.get("pages_ok", 0) >= args.max_entries:
                 break
             t0 = time.perf_counter()
             try:
-                append_log_jsonl(run_dir, {"event": "fetch_start", "url": url, "ts": time.time()})
+                append_log_jsonl(
+                    run_dir, {"event": "fetch_start", "url": url, "ts": time.time()}
+                )
                 result = await crawler.arun(url=url)
                 links: List[str] = _extract_links_from_result(url, result)
 
-                path, nbytes = persist_page_markdown(run_dir, url, result.markdown or "")
-                append_jsonl(run_dir, {"url": url, "markdown_path": path, "bytes": nbytes})
+                path, nbytes = persist_page_markdown(
+                    run_dir, url, result.markdown or ""
+                )
+                append_jsonl(
+                    run_dir, {"url": url, "markdown_path": path, "bytes": nbytes}
+                )
                 if "links_csv" in args.formats and links:
                     append_links_csv(run_dir, url, links)
 
@@ -616,7 +788,16 @@ async def _persist_crawl_sitemap(args: CrawlSitemapArgs) -> CrawlPersistResult:
                 )
                 manifest.pages.append(rec)
                 update_totals(manifest, rec)
-                append_log_jsonl(run_dir, {"event": "fetch_ok", "url": url, "bytes": nbytes, "links": len(links), "ts": time.time()})
+                append_log_jsonl(
+                    run_dir,
+                    {
+                        "event": "fetch_ok",
+                        "url": url,
+                        "bytes": nbytes,
+                        "links": len(links),
+                        "ts": time.time(),
+                    },
+                )
 
             except Exception as e:
                 rec = PageRecord(
@@ -629,7 +810,15 @@ async def _persist_crawl_sitemap(args: CrawlSitemapArgs) -> CrawlPersistResult:
                 )
                 manifest.pages.append(rec)
                 update_totals(manifest, rec)
-                append_log_jsonl(run_dir, {"event": "fetch_error", "url": url, "error": str(e), "ts": time.time()})
+                append_log_jsonl(
+                    run_dir,
+                    {
+                        "event": "fetch_error",
+                        "url": url,
+                        "error": str(e),
+                        "ts": time.time(),
+                    },
+                )
 
             write_manifest(run_dir, manifest)
             await asyncio.sleep(args.politeness_delay_ms / 1000.0)
@@ -665,19 +854,34 @@ async def call_tool(name: str, arguments: Dict[str, Any]) -> Any:
         parsed = ScrapeArgs.model_validate(arguments)
         if parsed.output_dir:
             result = await _persist_scrape(parsed)
-            logger.info("scrape persist done url=%s bytes=%d", str(parsed.url), result.bytes_written)
+            logger.info(
+                "scrape persist done url=%s bytes=%d",
+                str(parsed.url),
+                result.bytes_written,
+            )
         else:
             result = await _run_scrape(parsed)
-            logger.info("scrape done url=%s chars=%d links=%d", str(parsed.url), len(result.markdown or ""), len(result.links))
+            logger.info(
+                "scrape done url=%s chars=%d links=%d",
+                str(parsed.url),
+                len(result.markdown or ""),
+                len(result.links),
+            )
         return json.loads(result.model_dump_json())
     elif name == "crawl":
         parsed = CrawlArgs.model_validate(arguments)
         if parsed.output_dir:
             result = await _persist_crawl(parsed)
-            logger.info("crawl persist done start=%s pages_ok=%d", str(parsed.seed_url), result.pages_ok)
+            logger.info(
+                "crawl persist done start=%s pages_ok=%d",
+                str(parsed.seed_url),
+                result.pages_ok,
+            )
         else:
             result = await _run_crawl(parsed)
-            logger.info("crawl done start=%s pages=%d", str(parsed.seed_url), result.total_pages)
+            logger.info(
+                "crawl done start=%s pages=%d", str(parsed.seed_url), result.total_pages
+            )
         return json.loads(result.model_dump_json())
     elif name == "crawl_site":
         parsed = CrawlSiteArgs.model_validate(arguments)
@@ -699,9 +903,12 @@ async def _run_stdio_server() -> None:
             read_stream,
             write_stream,
             InitializationOptions(
-                server_name="crawl4ai-mcp",
+                server_name="mcp-crawl4ai",
                 server_version="0.1.0",
-                capabilities=server.get_capabilities(notification_options=NotificationOptions(), experimental_capabilities={}),
+                capabilities=server.get_capabilities(
+                    notification_options=NotificationOptions(),
+                    experimental_capabilities={},
+                ),
             ),
         )
     logger.info("server stopped")
