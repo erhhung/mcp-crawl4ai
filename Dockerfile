@@ -1,5 +1,7 @@
 # Use official Playwright image with browsers already installed
-FROM mcr.microsoft.com/playwright/python:v1.58.0-noble AS base
+# IMPORTANT: make sure the Python `playwright` component in
+# requirements.txt is pinned to the same Playwright version
+FROM mcr.microsoft.com/playwright/python:v1.62.0-noble AS base
 
 # Set working directory
 WORKDIR /app
@@ -40,6 +42,5 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD python -c "import crawler_agent.mcp_server; print('OK')" || exit 1
 
 # Labels for metadata
-LABEL maintainer="crawler_agent" \
-    description="Crawl4AI MCP Server - Web scraping and crawling tools for AI agents" \
-    version="1.0.0"
+LABEL version="1.0.0" maintainer="crawler_agent" \
+    description="Crawl4AI MCP Server — Web scraping and crawling tools for AI agents"
